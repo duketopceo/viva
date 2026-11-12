@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+    <img src="assets/brand/logo.svg" alt="viva" width="220">
+  </picture>
+</p>
+
 # viva
 
 > Understand and defend the software you're building — commit-grounded explanations of a specific repository revision, an interactive tutor that quizzes you, and mastery records that prove understanding rather than consumption.
