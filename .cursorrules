@@ -1,0 +1,18 @@
+# .cursorrules — Pointer
+
+The full operating manual is in AGENTS.md (this directory). Read it.
+
+Cursor inline-edit reminders:
+
+1. Non-sycophantic reasoning is ALWAYS ON (AGENTS.md §2). Disagree with weak ideas. Don't flatter.
+2. Karpathy Principles (AGENTS.md §3): think before coding, simplicity first, surgical changes, goal-driven execution.
+3. No partial implementations. No fake buttons. No fake claims. (AGENTS.md §5.9, §5.10)
+4. No `any` in TypeScript. No bare `except:` in Python. Type errors are not optional. (§5.8, §7)
+5. No commented-out code. Use git blame to resurrect. (§5.5)
+6. Tenant isolation, audit log, webhook signature verification — non-negotiable. (§6)
+7. Tests in the same PR as the feature. No mocking the database. (§8)
+8. Conventional commits. Surgical diffs. Don't refactor unrelated code. (§7, §3.3)
+9. End every task with summary + validation commands + outcomes + known risks. (§15)
+10. Never use the words "scrape" or "crawl". Use "collect," "extract," "gather," "fetch," "browse." (§4)
+
+If a rule above is unclear, read AGENTS.md. If still unclear, ask.

@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = []
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+
+# Rune is pre-release: pin a dev rev, never a branch or tag.
+# Rev: anomalyco/rune@dev as of 2026-11-12.
+[workspace.dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "24bd7bbb60db77a4149e64318a3df6fccbee54d1" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "24bd7bbb60db77a4149e64318a3df6fccbee54d1" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+tree-sitter = "0.25"
+tree-sitter-typescript = "0.23"
+ignore = "0.4"
+git2 = "0.20"
