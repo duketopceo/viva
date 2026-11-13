@@ -20,8 +20,12 @@ pub enum CoreError {
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
-fn short_revision(sha: &str) -> &str {
-    let end = sha.len().min(8);
+/// First 8 bytes of a revision, never splitting a UTF-8 character.
+pub fn short_revision(sha: &str) -> &str {
+    let mut end = sha.len().min(8);
+    while !sha.is_char_boundary(end) {
+        end -= 1;
+    }
     &sha[..end]
 }
 
@@ -278,20 +282,22 @@ impl Auditor {
         };
 
         let mut evidence = Vec::new();
-        let path_key = target
-            .feature_id
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(target.label.as_str());
+        let feature_key = target.feature_id.as_deref().filter(|s| !s.is_empty());
+        let label_key = target.label.as_str();
+        let path_key = feature_key.unwrap_or(label_key);
 
-        // Prefer commit-pinned index symbols; try the display label, then the search key.
+        // Prefer the explicit feature id. A display label can name a different symbol.
         let store = self
             .store
             .lock()
             .map_err(|_| CoreError::Msg("store lock poisoned".into()))?;
-        let mut indexed = store.find_symbols(&target.commit_sha, &target.label)?;
-        if indexed.is_empty() && path_key != target.label {
-            indexed = store.find_symbols(&target.commit_sha, path_key)?;
+        let mut indexed = if let Some(key) = feature_key {
+            store.find_symbols(&target.commit_sha, key)?
+        } else {
+            Vec::new()
+        };
+        if indexed.is_empty() && feature_key != Some(label_key) {
+            indexed = store.find_symbols(&target.commit_sha, label_key)?;
         }
         drop(store);
         for sym in &indexed {
@@ -541,6 +547,85 @@ mod tests {
         assert!(a.end_line >= a.start_line);
         assert_eq!(exp.retrieval.codebase_memory, AdapterStatus::Absent);
         assert_eq!(exp.retrieval.graphify, AdapterStatus::Absent);
+    }
+
+    #[test]
+    fn short_revision_does_not_split_utf8() {
+        assert_eq!(short_revision("abcdefgé"), "abcdefg");
+        assert_eq!(short_revision("deadbeefcafe"), "deadbeef");
+        assert_eq!(short_revision(""), "");
+    }
+
+    #[test]
+    fn explain_prefers_feature_id_over_colliding_label() {
+        use git2::Repository;
+        use viva_index::{IndexOptions, index_commit};
+
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "viva-test").unwrap();
+            cfg.set_str("user.email", "viva@test.local").unwrap();
+        }
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/views.ts"),
+            "export function Panel() { return 1; }\nexport function SecretsView() { return 2; }\n",
+        )
+        .unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(oid).unwrap();
+        let sig = repo.signature().unwrap();
+        let sha = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+
+        let store = Store::open_in_memory().unwrap();
+        index_commit(
+            &store,
+            &IndexOptions {
+                repo_root: dir.path().to_path_buf(),
+                commit_sha: sha.clone(),
+                fingerprint_dirty: false,
+            },
+        )
+        .unwrap();
+
+        let auditor = Auditor::new(store, dir.path().to_path_buf());
+        let t = auditor
+            .register_target(
+                TargetKind::Feature,
+                "Panel",
+                &sha,
+                None,
+                None,
+                Some("SecretsView"),
+                false,
+            )
+            .unwrap();
+        let exp = auditor.explain(&t.id).unwrap();
+        let lines: Vec<u32> = exp
+            .sections
+            .iter()
+            .flat_map(|s| s.evidence.iter())
+            .filter_map(|e| e.anchor.as_ref())
+            .map(|a| a.start_line)
+            .collect();
+        assert!(
+            lines.contains(&2),
+            "feature id SecretsView should win over label Panel, got {lines:?}"
+        );
+        assert!(
+            !lines.contains(&1),
+            "label Panel must not shadow the feature id, got {lines:?}"
+        );
     }
 
     #[test]

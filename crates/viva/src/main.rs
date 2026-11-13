@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
-use viva_core::Auditor;
+use viva_core::{Auditor, short_revision};
 use viva_db::{Store, TargetKind};
 use viva_index::{IndexOptions, index_commit};
 
@@ -62,6 +62,8 @@ struct MapNode {
     path: String,
     kind: String,
     children: Vec<MapNode>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    incomplete: bool,
 }
 
 #[tokio::main]
@@ -113,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
                     h.file_path,
                     h.start_line,
                     h.end_line,
-                    &h.commit_sha[..8.min(h.commit_sha.len())],
+                    short_revision(&h.commit_sha),
                     h.kind
                 );
             }
@@ -134,16 +136,20 @@ fn resolve_repo_commit(repo: &PathBuf, spec: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
+fn repo_display_name(root: &FsPath) -> String {
+    let resolved = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    resolved
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("repo")
+        .to_ascii_lowercase()
+}
+
 fn seed_repo_targets(auditor: &Auditor) -> anyhow::Result<()> {
     if !auditor.list_targets()?.is_empty() {
         return Ok(());
     }
-    let root = &auditor.repo_root;
-    let name = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("repo")
-        .to_ascii_lowercase();
+    let name = repo_display_name(&auditor.repo_root);
     // Questions the learner can ask; search keys stay path-friendly.
     let seeds: &[(&str, &str)] = if name.contains("omaseal") {
         &[
@@ -175,14 +181,22 @@ fn seed_repo_targets(auditor: &Auditor) -> anyhow::Result<()> {
 }
 
 fn build_map(root: &FsPath, max_depth: usize) -> MapNode {
-    fn walk(dir: &FsPath, root: &FsPath, depth: usize, max_depth: usize) -> Vec<MapNode> {
+    fn walk(dir: &FsPath, root: &FsPath, depth: usize, max_depth: usize) -> (Vec<MapNode>, bool) {
         if depth > max_depth {
-            return Vec::new();
+            return (Vec::new(), false);
         }
-        let mut entries = match std::fs::read_dir(dir) {
-            Ok(e) => e.filter_map(|e| e.ok()).collect::<Vec<_>>(),
-            Err(_) => return Vec::new(),
+        let read = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return (Vec::new(), true),
         };
+        let mut entries = Vec::new();
+        let mut incomplete = false;
+        for entry in read {
+            match entry {
+                Ok(entry) => entries.push(entry),
+                Err(_) => incomplete = true,
+            }
+        }
         entries.sort_by_key(|e| e.file_name());
         let mut out = Vec::new();
         for entry in entries {
@@ -202,12 +216,14 @@ fn build_map(root: &FsPath, max_depth: usize) -> MapNode {
                 .to_string_lossy()
                 .to_string();
             if path.is_dir() {
-                let children = walk(&path, root, depth + 1, max_depth);
-                if !children.is_empty() || depth < 2 {
+                let (children, child_incomplete) = walk(&path, root, depth + 1, max_depth);
+                incomplete |= child_incomplete;
+                if !children.is_empty() || depth < 2 || child_incomplete {
                     out.push(MapNode {
                         path: rel,
                         kind: "dir".into(),
                         children,
+                        incomplete: child_incomplete,
                     });
                 }
             } else {
@@ -220,12 +236,14 @@ fn build_map(root: &FsPath, max_depth: usize) -> MapNode {
                         path: rel,
                         kind: "file".into(),
                         children: Vec::new(),
+                        incomplete: false,
                     });
                 }
             }
         }
-        out
+        (out, incomplete)
     }
+    let (children, incomplete) = walk(root, root, 0, max_depth);
     MapNode {
         path: root
             .file_name()
@@ -233,7 +251,8 @@ fn build_map(root: &FsPath, max_depth: usize) -> MapNode {
             .unwrap_or(".")
             .to_string(),
         kind: "dir".into(),
-        children: walk(root, root, 0, max_depth),
+        children,
+        incomplete,
     }
 }
 
@@ -257,8 +276,14 @@ async fn serve(db: &str, repo: PathBuf, port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn index() -> Html<&'static str> {
-    Html(DASHBOARD_HTML)
+fn dashboard_html(repo_root: &FsPath) -> String {
+    let name = repo_display_name(repo_root);
+    let literal = serde_json::to_string(&name).unwrap_or_else(|_| "\"repo\"".to_string());
+    DASHBOARD_HTML.replace("\"__VIVA_REPO_NAME__\"", &literal)
+}
+
+async fn index(State(state): State<AppState>) -> Html<String> {
+    Html(dashboard_html(&state.auditor.repo_root))
 }
 
 async fn list_targets(State(state): State<AppState>) -> impl IntoResponse {
@@ -683,6 +708,8 @@ const DASHBOARD_HTML: &str = r###"<!DOCTYPE html>
 </section>
 <script>
 const THEME_KEY = 'viva.theme';
+const REPO_NAME = "__VIVA_REPO_NAME__";
+const PREPARED = String(REPO_NAME).toLowerCase().includes('omaseal');
 const ROOM = {
   engine: { title: 'Secret engine', blurb: 'Stores secrets, checks who may read them, and hands them out.' },
   docs: { title: 'Guides and plans', blurb: 'Written notes about how the product is meant to work.' },
@@ -769,10 +796,16 @@ function humanize(id){
   s = s.replace(/\b(api|ui|mcp|cli|db|jwt|oauth|sso|http|json|qml)\b/g, (m) => m.toUpperCase());
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : String(id||'');
 }
+function preparedRoom(leaf){
+  return PREPARED && ROOM[leaf] ? ROOM[leaf] : null;
+}
 function placeTitle(path, kind){
   const leaf = leafName(path);
-  if (kind === 'dir' && ROOM[leaf]) return ROOM[leaf].title;
+  const room = kind === 'dir' ? preparedRoom(leaf) : null;
+  if (room) return room.title;
   if (kind === 'file') {
+    if (/^lib\./i.test(leaf)) return 'Library entry point';
+    if (/^main\./i.test(leaf)) return 'Program entry point';
     const isTest = /\.(test|spec)\./i.test(leaf) || /_test\./i.test(leaf) || /^test_/.test(leaf);
     const name = humanize(leaf.replace(/_test(?=\.)/, '').replace(/^test_/, ''));
     return isTest ? name + ' checks' : name;
@@ -780,12 +813,13 @@ function placeTitle(path, kind){
   return humanize(leaf || path || 'Repository');
 }
 function placeBlurb(path){
-  const leaf = leafName(path);
-  return (ROOM[leaf] && ROOM[leaf].blurb) || '';
+  const room = preparedRoom(leafName(path));
+  return room ? room.blurb : '';
 }
 function topicForPath(path){
   const leaf = leafName(path);
-  if (ROOM[leaf]) return { label: ROOM[leaf].title, feature_id: leaf };
+  const room = preparedRoom(leaf);
+  if (room) return { label: room.title, feature_id: leaf };
   return { label: placeTitle(path, 'dir'), feature_id: path };
 }
 function applyTheme(theme){
@@ -798,21 +832,38 @@ function initTheme(){
   applyTheme(saved === 'light' || saved === 'dark' ? saved : pref);
 }
 function renderTree(n, depth, focusPath){
-  const selected = focusPath && n.path === focusPath;
+  const li = document.createElement('li');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tree-node';
+  btn.dataset.path = n.path || '';
+  btn.setAttribute('aria-selected', focusPath && n.path === focusPath ? 'true' : 'false');
   const title = placeTitle(n.path, n.kind);
-  const pathNote = n.path && n.path !== leafName(n.path) ? `<span class="path" title="${esc(n.path)}">${esc(n.path)}</span>` : '';
-  let html = `<li><button type="button" class="tree-node" data-path="${esc(n.path)}" aria-selected="${selected?'true':'false'}"><span class="${n.kind==='dir'?'place':''}">${esc(title)}</span>${pathNote}</button>`;
-  if (n.children && n.children.length && depth < 3){
-    html += '<ul>' + n.children.map(c => renderTree(c, depth+1, focusPath)).join('') + '</ul>';
+  const label = document.createElement('span');
+  if (n.kind === 'dir') label.className = 'place';
+  label.textContent = title;
+  btn.appendChild(label);
+  const leaf = leafName(n.path);
+  const secondary = n.path && n.path !== title ? n.path : (leaf && leaf !== title ? leaf : '');
+  if (secondary) {
+    const note = document.createElement('span');
+    note.className = 'path';
+    note.textContent = secondary;
+    btn.appendChild(note);
   }
-  html += '</li>';
-  return html;
+  li.appendChild(btn);
+  if (n.children && n.children.length && depth < 3){
+    const ul = document.createElement('ul');
+    n.children.forEach(c => ul.appendChild(renderTree(c, depth + 1, focusPath)));
+    li.appendChild(ul);
+  }
+  return li;
 }
 let mapRoot = null;
 let focusPath = '';
 function renderLesson(featureId, question){
   const box = document.getElementById('lesson');
-  const L = LESSON[featureId];
+  const L = PREPARED ? LESSON[featureId] : null;
   if (!L) {
     box.innerHTML = `<h2>${esc(question || 'Your question')}</h2>
       <p class="story">We do not have a prepared explanation for this yet. Use the proof on the right — files that match your words — and say the story back in plain language.</p>
@@ -826,14 +877,16 @@ function renderLesson(featureId, question){
 }
 async function loadMap(){
   mapRoot = await (await fetch('/api/map')).json();
-  document.getElementById('repoHint').textContent =
-    'Rooms related to this repository. Open only after you understand the story above.';
+  document.getElementById('repoHint').textContent = mapRoot.incomplete
+    ? 'Some folders could not be read, so this map is incomplete.'
+    : 'Rooms related to this repository. Open only after you understand the story above.';
   renderBoard();
   renderOverview();
 }
 function renderBoard(){
   const board = document.getElementById('board');
   board.innerHTML = '';
+  if (!mapRoot) return;
   const dirs = (mapRoot.children||[]).filter(c => c.kind==='dir');
   if (!dirs.length){
     board.innerHTML = '<div class="empty">No rooms found in this repository yet.</div>';
@@ -862,10 +915,14 @@ function renderBoard(){
 }
 function renderOverview(){
   const overview = document.getElementById('overview');
+  overview.replaceChildren();
+  if (!mapRoot) return;
   const root = focusPath
     ? (mapRoot.children||[]).find(c => c.path === focusPath) || mapRoot
     : mapRoot;
-  overview.innerHTML = '<ul>' + renderTree(root, 0, focusPath) + '</ul>';
+  const ul = document.createElement('ul');
+  ul.appendChild(renderTree(root, 0, focusPath));
+  overview.appendChild(ul);
   overview.querySelectorAll('.tree-node').forEach(el => {
     el.onclick = (e) => {
       e.stopPropagation();
@@ -883,7 +940,8 @@ async function addAndSelect(label, feature_id){
   const searchKey = feature_id || label;
   await load();
   const existing = [...document.querySelectorAll('.row')].find(i =>
-    i.dataset.label === label || i.dataset.featureId === searchKey
+    i.dataset.commitSha === commit_sha &&
+    (i.dataset.label === label || i.dataset.featureId === searchKey)
   );
   if (existing) {
     select(existing.dataset.id, existing);
@@ -916,6 +974,7 @@ async function load() {
     el.dataset.id = t.id;
     el.dataset.label = t.label;
     el.dataset.featureId = t.feature_id || '';
+    el.dataset.commitSha = t.commit_sha || '';
     el.setAttribute('role', 'option');
     el.setAttribute('aria-selected', 'false');
     el.innerHTML = `<div class="title">${esc(t.label)}</div>`;
@@ -923,19 +982,23 @@ async function load() {
     list.appendChild(el);
   });
 }
+let selectToken = 0;
 async function select(id, el) {
+  const token = ++selectToken;
   document.querySelectorAll('.row').forEach(i => i.setAttribute('aria-selected', 'false'));
   el.setAttribute('aria-selected', 'true');
   const featureId = el.dataset.featureId || '';
   renderLesson(featureId, el.dataset.label);
-  if (featureId && ROOM[featureId]) {
+  if (PREPARED && featureId && ROOM[featureId] && mapRoot) {
     focusPath = featureId;
     renderBoard();
     renderOverview();
     document.getElementById('mapDetails').open = false;
   }
-  const exp = await (await fetch('/api/targets/' + id + '/explain')).json();
   const drawer = document.getElementById('drawer');
+  drawer.innerHTML = '<div class="empty">Checking the code for this question…</div>';
+  const exp = await (await fetch('/api/targets/' + encodeURIComponent(id) + '/explain')).json();
+  if (token !== selectToken) return;
   drawer.innerHTML = '';
   if (!exp.sections || !exp.sections.length){
     drawer.innerHTML = '<div class="empty">No proof collected for this question yet.</div>';
@@ -969,8 +1032,15 @@ async function select(id, el) {
       if (e.anchor) {
         const a = document.createElement('div');
         a.className = 'anchor';
-        a.title = `${e.anchor.path}:${e.anchor.start_line}-${e.anchor.end_line}`;
-        a.textContent = `${placeTitle(e.anchor.path, 'file')} · lines ${e.anchor.start_line}–${e.anchor.end_line}`;
+        const sha = String(e.anchor.commit_sha || '');
+        const short = [...sha].slice(0, 8).join('');
+        a.title = `${e.anchor.path}:${e.anchor.start_line}-${e.anchor.end_line}@${sha}`;
+        const name = document.createElement('div');
+        name.textContent = placeTitle(e.anchor.path, 'file');
+        const meta = document.createElement('div');
+        meta.textContent = `${e.anchor.path} · lines ${e.anchor.start_line}–${e.anchor.end_line}${short ? ' · ' + short : ''}`;
+        a.appendChild(name);
+        a.appendChild(meta);
         d.appendChild(a);
       }
       drawer.appendChild(d);
@@ -987,8 +1057,7 @@ document.getElementById('themeToggle').onclick = () => {
   applyTheme(next);
 };
 initTheme();
-loadMap();
-load().then(() => {
+Promise.all([loadMap(), load()]).then(() => {
   const first = document.querySelector('.row');
   if (first) select(first.dataset.id, first);
 });
@@ -1020,5 +1089,66 @@ mod dashboard_tests {
     fn evidence_categories_use_human_labels() {
         assert!(DASHBOARD_HTML.contains("From the code"));
         assert!(DASHBOARD_HTML.contains("Interpretation"));
+    }
+
+    #[test]
+    fn entry_points_and_proof_identity_are_in_the_page() {
+        assert!(DASHBOARD_HTML.contains("Library entry point"));
+        assert!(DASHBOARD_HTML.contains("Program entry point"));
+        assert!(DASHBOARD_HTML.contains("selectToken"));
+        assert!(DASHBOARD_HTML.contains("dataset.commitSha"));
+        assert!(DASHBOARD_HTML.contains("Checking the code for this question"));
+        assert!(DASHBOARD_HTML.contains("__VIVA_REPO_NAME__"));
+    }
+}
+
+#[cfg(test)]
+mod map_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn unreadable_directory_marks_map_incomplete() {
+        let root = std::env::temp_dir().join(format!("viva-map-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::write(root.join("locked/note.rs"), "fn note() {}\n").unwrap();
+        let locked = root.join("locked");
+        let mut perms = fs::metadata(&locked).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&locked, perms.clone()).unwrap();
+        let map = build_map(&root, 3);
+        perms.set_mode(0o755);
+        let _ = fs::set_permissions(&locked, perms);
+        let _ = fs::remove_dir_all(&root);
+        assert!(map.incomplete, "root should record the failed scan");
+        assert!(
+            map.children
+                .iter()
+                .any(|c| c.path.ends_with("locked") && c.incomplete)
+        );
+    }
+
+    #[test]
+    fn dot_path_uses_the_real_directory_name() {
+        let root = std::env::temp_dir().join(format!("viva-name-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let name = repo_display_name(&root.join("."));
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(
+            name,
+            root.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+        );
+    }
+
+    #[test]
+    fn dashboard_injects_repo_name() {
+        let html = dashboard_html(FsPath::new("omaseal"));
+        assert!(html.contains("\"omaseal\""));
+        assert!(!html.contains("__VIVA_REPO_NAME__"));
     }
 }
