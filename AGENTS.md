@@ -9,7 +9,7 @@ viva helps a developer understand and defend the software they are building. It 
 
 ## Key Files
 
-- `Cargo.toml` — workspace manifest; `members` stays empty until plan units add crates
+- `Cargo.toml` — workspace: `viva-db`, `viva-core`, `viva` (local audit dashboard)
 - `docs/BRIEF.md` — product brief: evidence categories, learning cycle, mastery records, release gate
 - `docs/plans/` — ce-plan implementation plans (Tallyline-imported)
 - `ROADMAP.md` — phased delivery
