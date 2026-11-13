@@ -2,10 +2,10 @@
 
 use chrono::Utc;
 use git2::{ObjectType, Oid, Repository, TreeWalkMode, TreeWalkResult};
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tree_sitter::{Node, Parser, TreeCursor};
+use viva_core::fingerprint_tree;
 use viva_db::{new_id, IndexRun, ReferenceRow, Store, SymbolEdge, SymbolRow};
 
 #[derive(Debug, Error)]
@@ -39,41 +39,6 @@ pub struct IndexSummary {
     pub working_tree_fingerprint: Option<String>,
 }
 
-/// Shared dirty fingerprint — sorted relative paths of the working tree (same as viva-core).
-pub fn fingerprint_working_tree(root: &Path) -> Result<String> {
-    let mut paths = Vec::new();
-    collect_files(root, root, &mut paths)?;
-    paths.sort();
-    let mut h = Sha256::new();
-    for p in paths {
-        h.update(p.as_bytes());
-        h.update(b"\n");
-    }
-    Ok(hex::encode(h.finalize()))
-}
-
-fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name();
-        if name == ".git" {
-            continue;
-        }
-        if path.is_dir() {
-            collect_files(root, &path, out)?;
-        } else {
-            out.push(
-                path.strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-    }
-    Ok(())
-}
-
 pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> {
     let repo = Repository::open(&opts.repo_root)?;
     let oid = resolve_commit(&repo, &opts.commit_sha)?;
@@ -84,7 +49,10 @@ pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> 
     let ignore = load_gitignore_at_tree(&repo, &tree)?;
 
     let fp = if opts.fingerprint_dirty {
-        Some(fingerprint_working_tree(&opts.repo_root)?)
+        Some(
+            fingerprint_tree(&opts.repo_root)
+                .map_err(|e| IndexError::Msg(e.to_string()))?,
+        )
     } else {
         None
     };
@@ -98,10 +66,14 @@ pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> 
     };
     store.insert_index_run(&run)?;
 
-    let mut parser = Parser::new();
-    parser
+    let mut ts_parser = Parser::new();
+    ts_parser
         .set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
         .map_err(|e| IndexError::Msg(format!("language: {e}")))?;
+    let mut tsx_parser = Parser::new();
+    tsx_parser
+        .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+        .map_err(|e| IndexError::Msg(format!("tsx language: {e}")))?;
 
     let mut symbols = 0usize;
     let mut references = 0usize;
@@ -114,14 +86,14 @@ pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> 
             if entry.kind() != Some(ObjectType::Blob) {
                 return TreeWalkResult::Ok;
             }
+            if !is_ts_path(name) {
+                return TreeWalkResult::Ok;
+            }
             let rel = if root_path.is_empty() {
                 name.to_string()
             } else {
                 format!("{root_path}{name}")
             };
-            if !is_ts_path(&rel) {
-                return TreeWalkResult::Ok;
-            }
             if ignore.matched(&rel, false).is_ignore() {
                 return TreeWalkResult::Ok;
             }
@@ -131,7 +103,12 @@ pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> 
             let Ok(text) = std::str::from_utf8(blob.content()) else {
                 return TreeWalkResult::Ok;
             };
-            if let Ok(parsed) = parse_typescript(&mut parser, text)
+            let parser = if name.ends_with(".tsx") {
+                &mut tsx_parser
+            } else {
+                &mut ts_parser
+            };
+            if let Ok(parsed) = parse_typescript(parser, text)
                 && let Ok(counts) =
                     persist_parse(store, &run, &commit_sha, &rel, text, &parsed)
             {
@@ -263,13 +240,14 @@ fn walk_decls(
                         sl,
                         el,
                     ));
-                    // collect call expressions inside this function
-                    let mut inner = node.walk();
-                    collect_calls(source, &mut inner, &name, out);
                     if cursor.goto_first_child() {
                         walk_decls(source, cursor, out, Some(&name));
                         cursor.goto_parent();
                     }
+                    if !cursor.goto_next_sibling() {
+                        break;
+                    }
+                    continue;
                 }
             }
             "class_declaration" | "interface_declaration" | "type_alias_declaration" => {
@@ -313,24 +291,6 @@ fn walk_decls(
         }
         if cursor.goto_first_child() {
             walk_decls(source, cursor, out, enclosing);
-            cursor.goto_parent();
-        }
-        if !cursor.goto_next_sibling() {
-            break;
-        }
-    }
-}
-
-fn collect_calls(source: &str, cursor: &mut TreeCursor, from: &str, out: &mut ParsedFile) {
-    loop {
-        let node = cursor.node();
-        if node.kind() == "call_expression"
-            && let Some(callee) = call_name(source, node)
-        {
-            out.calls.push((from.to_string(), callee));
-        }
-        if cursor.goto_first_child() {
-            collect_calls(source, cursor, from, out);
             cursor.goto_parent();
         }
         if !cursor.goto_next_sibling() {
@@ -567,12 +527,21 @@ export function signOut(): void {}
     }
 
     #[test]
-    fn dirty_fingerprint_differs() {
+    fn dirty_fingerprint_matches_core() {
         let dir = tempdir().unwrap();
         let _sha = init_repo_with_auth(dir.path());
-        let clean = fingerprint_working_tree(dir.path()).unwrap();
         fs::write(dir.path().join("extra.ts"), "export const x = 1;\n").unwrap();
-        let dirty = fingerprint_working_tree(dir.path()).unwrap();
-        assert_ne!(clean, dirty);
+        let from_core = fingerprint_tree(dir.path()).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let summary = index_commit(
+            &store,
+            &IndexOptions {
+                repo_root: dir.path().to_path_buf(),
+                commit_sha: "HEAD".into(),
+                fingerprint_dirty: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(summary.working_tree_fingerprint.as_deref(), Some(from_core.as_str()));
     }
 }

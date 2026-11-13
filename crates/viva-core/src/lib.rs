@@ -164,6 +164,9 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> std::io::Res
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        if entry.file_name() == ".git" {
+            continue;
+        }
         if path.is_dir() {
             collect_files(root, &path, out)?;
         } else {

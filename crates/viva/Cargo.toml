@@ -19,3 +19,4 @@ serde_json.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 clap = { version = "4", features = ["derive"] }
+git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }

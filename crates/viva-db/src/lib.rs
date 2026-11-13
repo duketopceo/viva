@@ -94,17 +94,17 @@ pub struct Store {
 
 impl Store {
     pub fn open_in_memory() -> Result<Self> {
-        let s = Self {
-            conn: Connection::open_in_memory()?,
-        };
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let s = Self { conn };
         s.migrate()?;
         Ok(s)
     }
 
     pub fn open_path(path: &str) -> Result<Self> {
-        let s = Self {
-            conn: Connection::open(path)?,
-        };
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let s = Self { conn };
         s.migrate()?;
         Ok(s)
     }

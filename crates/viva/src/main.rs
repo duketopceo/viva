@@ -45,6 +45,8 @@ enum Command {
     /// Exact symbol-name search over indexed commits.
     Search {
         name: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
         #[arg(long)]
         commit: Option<String>,
     },
@@ -90,10 +92,14 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Search { name, commit } => {
+        Command::Search {
+            name,
+            repo,
+            commit,
+        } => {
             let store = Store::open_path(&cli.db)?;
-            let commit = commit.unwrap_or_else(|| "HEAD".into());
-            // If commit is HEAD literal with no index under that string, search all matching names via scan of known runs is not available — require sha after index.
+            let commit_spec = commit.unwrap_or_else(|| "HEAD".into());
+            let commit = resolve_repo_commit(&repo, &commit_spec)?;
             let hits = store.find_symbols(&commit, &name)?;
             if hits.is_empty() {
                 println!("no symbols named `{name}` at commit {commit}");
@@ -107,6 +113,14 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn resolve_repo_commit(repo: &PathBuf, spec: &str) -> anyhow::Result<String> {
+    let repo = git2::Repository::open(repo)?;
+    if spec.eq_ignore_ascii_case("HEAD") {
+        return Ok(repo.head()?.peel_to_commit()?.id().to_string());
+    }
+    Ok(repo.revparse_single(spec)?.peel_to_commit()?.id().to_string())
 }
 
 async fn serve(db: &str, repo: PathBuf, port: u16) -> anyhow::Result<()> {
