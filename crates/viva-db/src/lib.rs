@@ -1,7 +1,7 @@
 //! Commit-pinned explain targets and index tables for Viva.
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -269,7 +269,14 @@ impl Store {
         self.conn.execute(
             "INSERT INTO symbol_edges (id, run_id, commit_sha, from_symbol_id, to_name, kind)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![e.id, e.run_id, e.commit_sha, e.from_symbol_id, e.to_name, e.kind],
+            params![
+                e.id,
+                e.run_id,
+                e.commit_sha,
+                e.from_symbol_id,
+                e.to_name,
+                e.kind
+            ],
         )?;
         Ok(())
     }

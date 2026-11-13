@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tree_sitter::{Node, Parser, TreeCursor};
 use viva_core::fingerprint_tree;
-use viva_db::{new_id, IndexRun, ReferenceRow, Store, SymbolEdge, SymbolRow};
+use viva_db::{IndexRun, ReferenceRow, Store, SymbolEdge, SymbolRow, new_id};
 
 #[derive(Debug, Error)]
 pub enum IndexError {
@@ -49,10 +49,7 @@ pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> 
     let ignore = load_gitignore_at_tree(&repo, &tree)?;
 
     let fp = if opts.fingerprint_dirty {
-        Some(
-            fingerprint_tree(&opts.repo_root)
-                .map_err(|e| IndexError::Msg(e.to_string()))?,
-        )
+        Some(fingerprint_tree(&opts.repo_root).map_err(|e| IndexError::Msg(e.to_string()))?)
     } else {
         None
     };
@@ -79,46 +76,42 @@ pub fn index_commit(store: &Store, opts: &IndexOptions) -> Result<IndexSummary> 
     let mut references = 0usize;
     let mut edges = 0usize;
 
-    tree.walk(
-        TreeWalkMode::PreOrder,
-        |root_path, entry| {
-            let name = entry.name().unwrap_or("");
-            if entry.kind() != Some(ObjectType::Blob) {
-                return TreeWalkResult::Ok;
-            }
-            if !is_ts_path(name) {
-                return TreeWalkResult::Ok;
-            }
-            let rel = if root_path.is_empty() {
-                name.to_string()
-            } else {
-                format!("{root_path}{name}")
-            };
-            if ignore.matched(&rel, false).is_ignore() {
-                return TreeWalkResult::Ok;
-            }
-            let Ok(blob) = entry.to_object(&repo).and_then(|o| o.peel_to_blob()) else {
-                return TreeWalkResult::Ok;
-            };
-            let Ok(text) = std::str::from_utf8(blob.content()) else {
-                return TreeWalkResult::Ok;
-            };
-            let parser = if name.ends_with(".tsx") {
-                &mut tsx_parser
-            } else {
-                &mut ts_parser
-            };
-            if let Ok(parsed) = parse_typescript(parser, text)
-                && let Ok(counts) =
-                    persist_parse(store, &run, &commit_sha, &rel, text, &parsed)
-            {
-                symbols += counts.0;
-                references += counts.1;
-                edges += counts.2;
-            }
-            TreeWalkResult::Ok
-        },
-    )?;
+    tree.walk(TreeWalkMode::PreOrder, |root_path, entry| {
+        let name = entry.name().unwrap_or("");
+        if entry.kind() != Some(ObjectType::Blob) {
+            return TreeWalkResult::Ok;
+        }
+        if !is_ts_path(name) {
+            return TreeWalkResult::Ok;
+        }
+        let rel = if root_path.is_empty() {
+            name.to_string()
+        } else {
+            format!("{root_path}{name}")
+        };
+        if ignore.matched(&rel, false).is_ignore() {
+            return TreeWalkResult::Ok;
+        }
+        let Ok(blob) = entry.to_object(&repo).and_then(|o| o.peel_to_blob()) else {
+            return TreeWalkResult::Ok;
+        };
+        let Ok(text) = std::str::from_utf8(blob.content()) else {
+            return TreeWalkResult::Ok;
+        };
+        let parser = if name.ends_with(".tsx") {
+            &mut tsx_parser
+        } else {
+            &mut ts_parser
+        };
+        if let Ok(parsed) = parse_typescript(parser, text)
+            && let Ok(counts) = persist_parse(store, &run, &commit_sha, &rel, text, &parsed)
+        {
+            symbols += counts.0;
+            references += counts.1;
+            edges += counts.2;
+        }
+        TreeWalkResult::Ok
+    })?;
 
     Ok(IndexSummary {
         run_id: run.id,
@@ -542,6 +535,9 @@ export function signOut(): void {}
             },
         )
         .unwrap();
-        assert_eq!(summary.working_tree_fingerprint.as_deref(), Some(from_core.as_str()));
+        assert_eq!(
+            summary.working_tree_fingerprint.as_deref(),
+            Some(from_core.as_str())
+        );
     }
 }

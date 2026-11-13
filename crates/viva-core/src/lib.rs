@@ -20,6 +20,15 @@ pub enum CoreError {
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
+/// First 8 bytes of a revision, never splitting a UTF-8 character.
+pub fn short_revision(sha: &str) -> &str {
+    let mut end = sha.len().min(8);
+    while !sha.is_char_boundary(end) {
+        end -= 1;
+    }
+    &sha[..end]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceCategory {
@@ -273,20 +282,28 @@ impl Auditor {
         };
 
         let mut evidence = Vec::new();
+        let feature_key = target.feature_id.as_deref().filter(|s| !s.is_empty());
+        let label_key = target.label.as_str();
+        let path_key = feature_key.unwrap_or(label_key);
 
-        // Prefer commit-pinned index symbols matching the target label.
-        let indexed = self
+        // Prefer the explicit feature id. A display label can name a different symbol.
+        let store = self
             .store
             .lock()
-            .map_err(|_| CoreError::Msg("store lock poisoned".into()))?
-            .find_symbols(&target.commit_sha, &target.label)?;
+            .map_err(|_| CoreError::Msg("store lock poisoned".into()))?;
+        let mut indexed = if let Some(key) = feature_key {
+            store.find_symbols(&target.commit_sha, key)?
+        } else {
+            Vec::new()
+        };
+        if indexed.is_empty() && feature_key != Some(label_key) {
+            indexed = store.find_symbols(&target.commit_sha, label_key)?;
+        }
+        drop(store);
         for sym in &indexed {
             evidence.push(EvidenceItem {
                 category: EvidenceCategory::Static,
-                claim: format!(
-                    "Indexed {} `{}` participates in '{}'",
-                    sym.kind, sym.name, target.label
-                ),
+                claim: format!("This definition is part of {}.", target.label),
                 anchor: Some(CodeAnchor {
                     path: sym.file_path.clone(),
                     start_line: sym.start_line,
@@ -299,15 +316,26 @@ impl Auditor {
         }
 
         let mut hints = Vec::new();
-        if self.cbm.available() {
-            hints.extend(self.cbm.hint_paths(&target.label));
-        }
-        if self.graphify.available() {
-            hints.extend(self.graphify.hint_paths(&target.label));
+        let mut push_hints = |key: &str| {
+            if self.cbm.available() {
+                hints.extend(self.cbm.hint_paths(key));
+            }
+            if self.graphify.available() {
+                hints.extend(self.graphify.hint_paths(key));
+            }
+        };
+        push_hints(path_key);
+        if path_key != target.label {
+            push_hints(&target.label);
         }
         if evidence.is_empty() && hints.is_empty() {
-            hints.extend(path_search.hint_paths(&target.label));
+            hints.extend(path_search.hint_paths(path_key));
+            if path_key != target.label {
+                hints.extend(path_search.hint_paths(&target.label));
+            }
         }
+        hints.sort();
+        hints.dedup();
 
         for rel in &hints {
             let full = self.repo_root.join(rel);
@@ -315,7 +343,7 @@ impl Auditor {
                 let lines = content.lines().count() as u32;
                 evidence.push(EvidenceItem {
                     category: EvidenceCategory::Static,
-                    claim: format!("File `{rel}` participates in '{}'", target.label),
+                    claim: format!("This file is part of {}.", target.label),
                     anchor: Some(CodeAnchor {
                         path: rel.clone(),
                         start_line: 1,
@@ -332,8 +360,8 @@ impl Auditor {
             evidence.push(EvidenceItem {
                 category: EvidenceCategory::Inferred,
                 claim: format!(
-                    "No indexed anchors found for '{}'; at {}",
-                    target.label, target.commit_sha
+                    "Nothing in the index matched {} on this revision yet.",
+                    target.label
                 ),
                 anchor: None,
                 is_interpretation: true,
@@ -341,20 +369,18 @@ impl Auditor {
             });
         }
 
+        let short_rev = short_revision(&target.commit_sha);
         let what = AuditSection {
             title: "What".into(),
-            body: format!(
-                "Target {:?} «{}» at commit {}.",
-                target.kind, target.label, target.commit_sha
-            ),
+            body: format!("Looking at {} on revision {}.", target.label, short_rev),
             evidence: evidence.clone(),
         };
         let why = AuditSection {
             title: "Why".into(),
-            body: "This slice exists so a non-technical owner can audit agent-written code like a senior review: intent before mechanism.".into(),
+            body: "So you can check work the same way a careful reviewer would: what it is for, before how it is built.".into(),
             evidence: vec![EvidenceItem {
                 category: EvidenceCategory::Inferred,
-                claim: "Motivation is product guidance, not a runtime observation.".into(),
+                claim: "This reason comes from product guidance, not from a recorded run.".into(),
                 anchor: None,
                 is_interpretation: true,
                 unsupported: true,
@@ -362,7 +388,7 @@ impl Auditor {
         };
         let how = AuditSection {
             title: "How".into(),
-            body: "Follow static anchors from search/adapters; inferred claims stay labeled.".into(),
+            body: "Start from the files below. Claims marked as interpretation are guesses, not proof.".into(),
             evidence: evidence
                 .iter()
                 .filter(|e| e.category == EvidenceCategory::Static)
@@ -371,10 +397,10 @@ impl Auditor {
         };
         let alternatives = AuditSection {
             title: "Alternatives & standards".into(),
-            body: "Prefer commit-pinned evidence over embeddings-only answers; DeepTutor-style teach/assess comes later — this pass is audit explanation only.".into(),
+            body: "Prefer evidence pinned to a revision over answers that only sound right. Teaching and quizzes come later — this pass is explanation only.".into(),
             evidence: vec![EvidenceItem {
                 category: EvidenceCategory::Inferred,
-                claim: "Standards guidance is interpretive unless linked to a repo doc anchor.".into(),
+                claim: "Standards notes are interpretation unless they point at a file in the repo.".into(),
                 anchor: None,
                 is_interpretation: true,
                 unsupported: true,
@@ -454,7 +480,7 @@ mod tests {
     #[test]
     fn explain_uses_indexed_symbol_line_ranges() {
         use git2::Repository;
-        use viva_index::{index_commit, IndexOptions};
+        use viva_index::{IndexOptions, index_commit};
 
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
@@ -521,6 +547,85 @@ mod tests {
         assert!(a.end_line >= a.start_line);
         assert_eq!(exp.retrieval.codebase_memory, AdapterStatus::Absent);
         assert_eq!(exp.retrieval.graphify, AdapterStatus::Absent);
+    }
+
+    #[test]
+    fn short_revision_does_not_split_utf8() {
+        assert_eq!(short_revision("abcdefgé"), "abcdefg");
+        assert_eq!(short_revision("deadbeefcafe"), "deadbeef");
+        assert_eq!(short_revision(""), "");
+    }
+
+    #[test]
+    fn explain_prefers_feature_id_over_colliding_label() {
+        use git2::Repository;
+        use viva_index::{IndexOptions, index_commit};
+
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "viva-test").unwrap();
+            cfg.set_str("user.email", "viva@test.local").unwrap();
+        }
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/views.ts"),
+            "export function Panel() { return 1; }\nexport function SecretsView() { return 2; }\n",
+        )
+        .unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(oid).unwrap();
+        let sig = repo.signature().unwrap();
+        let sha = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+
+        let store = Store::open_in_memory().unwrap();
+        index_commit(
+            &store,
+            &IndexOptions {
+                repo_root: dir.path().to_path_buf(),
+                commit_sha: sha.clone(),
+                fingerprint_dirty: false,
+            },
+        )
+        .unwrap();
+
+        let auditor = Auditor::new(store, dir.path().to_path_buf());
+        let t = auditor
+            .register_target(
+                TargetKind::Feature,
+                "Panel",
+                &sha,
+                None,
+                None,
+                Some("SecretsView"),
+                false,
+            )
+            .unwrap();
+        let exp = auditor.explain(&t.id).unwrap();
+        let lines: Vec<u32> = exp
+            .sections
+            .iter()
+            .flat_map(|s| s.evidence.iter())
+            .filter_map(|e| e.anchor.as_ref())
+            .map(|a| a.start_line)
+            .collect();
+        assert!(
+            lines.contains(&2),
+            "feature id SecretsView should win over label Panel, got {lines:?}"
+        );
+        assert!(
+            !lines.contains(&1),
+            "label Panel must not shadow the feature id, got {lines:?}"
+        );
     }
 
     #[test]

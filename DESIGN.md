@@ -62,3 +62,11 @@ results. Code changes mark related evidence `needs review`.
 
 Rune (`anomalyco/rune`, pinned rev in `Cargo.toml`) + `rune-kit` components.
 Headless rendering (PNG + element-tree dump) is the UI verification path.
+
+Until the Rune shell lands, the HTML audit wedge follows the same polish bar
+(tokens only, one accent, kit-shaped controls, light + dark verification).
+
+Visualization bar (not dependencies): **Floorplan** (haydenschmitty/floorplan) —
+plain-English names and one-line explanations first, developer paths secondary —
+plus Archify-style explore (rooms → detail → evidence). v1 GUI copy must not
+lead with variable names, file stems, or jargon labels like FEATURE / DIR / FILE.

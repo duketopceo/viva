@@ -26,6 +26,7 @@ viva helps a developer understand and defend the software they are building. It 
 
 - Plan: `docs/plans/2026-11-12-0000-feat-viva-v1-plan.md`
 - Rune pinned at `anomalyco/rune@24bd7bbb` (dev rev, pre-release — re-pin deliberately, never float)
+- Visualization references (not required deps): `anomalyco/rune` + polish-bar tokens; Archify; Floorplan (`haydenschmitty/floorplan`)
 - DeepTutor overlap is substantial — plan unit U10 is an evaluation spike, not a fork
 - First ecosystem: TypeScript (tree-sitter); other languages come after the slice proves out
 
@@ -33,6 +34,7 @@ viva helps a developer understand and defend the software they are building. It 
 
 - Every explanation, claim, and assessment must resolve to a file + commit. A polished diagram without source anchors is a defect.
 - Three evidence categories stay visibly distinct: static (code/tests/config), observed (traces/test runs with recorded inputs+env), inferred (tutor interpretation). Never blur them.
+- v1 GUI labels and copy stay plain English (Floorplan-style): human explanations first; no variable names or FEATURE/DIR/FILE jargon as primary labels (paths/ids stay secondary).
 - Passing tests contribute evidence; they do not prove understanding by themselves.
 - On code change, related learning evidence is marked `needs review` — never auto-reset, never leave stale mastery labels untouched.
 - Explore mode gives explanations freely; Defend mode requires the learner's answer first. Both exist; neither is mandatory.
