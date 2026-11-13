@@ -20,6 +20,11 @@ pub enum CoreError {
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
+fn short_revision(sha: &str) -> &str {
+    let end = sha.len().min(8);
+    &sha[..end]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceCategory {
@@ -273,20 +278,26 @@ impl Auditor {
         };
 
         let mut evidence = Vec::new();
+        let path_key = target
+            .feature_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(target.label.as_str());
 
-        // Prefer commit-pinned index symbols matching the target label.
-        let indexed = self
+        // Prefer commit-pinned index symbols; try the display label, then the search key.
+        let store = self
             .store
             .lock()
-            .map_err(|_| CoreError::Msg("store lock poisoned".into()))?
-            .find_symbols(&target.commit_sha, &target.label)?;
+            .map_err(|_| CoreError::Msg("store lock poisoned".into()))?;
+        let mut indexed = store.find_symbols(&target.commit_sha, &target.label)?;
+        if indexed.is_empty() && path_key != target.label {
+            indexed = store.find_symbols(&target.commit_sha, path_key)?;
+        }
+        drop(store);
         for sym in &indexed {
             evidence.push(EvidenceItem {
                 category: EvidenceCategory::Static,
-                claim: format!(
-                    "Indexed {} `{}` participates in '{}'",
-                    sym.kind, sym.name, target.label
-                ),
+                claim: format!("This definition is part of {}.", target.label),
                 anchor: Some(CodeAnchor {
                     path: sym.file_path.clone(),
                     start_line: sym.start_line,
@@ -299,15 +310,26 @@ impl Auditor {
         }
 
         let mut hints = Vec::new();
-        if self.cbm.available() {
-            hints.extend(self.cbm.hint_paths(&target.label));
-        }
-        if self.graphify.available() {
-            hints.extend(self.graphify.hint_paths(&target.label));
+        let mut push_hints = |key: &str| {
+            if self.cbm.available() {
+                hints.extend(self.cbm.hint_paths(key));
+            }
+            if self.graphify.available() {
+                hints.extend(self.graphify.hint_paths(key));
+            }
+        };
+        push_hints(path_key);
+        if path_key != target.label {
+            push_hints(&target.label);
         }
         if evidence.is_empty() && hints.is_empty() {
-            hints.extend(path_search.hint_paths(&target.label));
+            hints.extend(path_search.hint_paths(path_key));
+            if path_key != target.label {
+                hints.extend(path_search.hint_paths(&target.label));
+            }
         }
+        hints.sort();
+        hints.dedup();
 
         for rel in &hints {
             let full = self.repo_root.join(rel);
@@ -315,7 +337,7 @@ impl Auditor {
                 let lines = content.lines().count() as u32;
                 evidence.push(EvidenceItem {
                     category: EvidenceCategory::Static,
-                    claim: format!("File `{rel}` participates in '{}'", target.label),
+                    claim: format!("This file is part of {}.", target.label),
                     anchor: Some(CodeAnchor {
                         path: rel.clone(),
                         start_line: 1,
@@ -332,8 +354,8 @@ impl Auditor {
             evidence.push(EvidenceItem {
                 category: EvidenceCategory::Inferred,
                 claim: format!(
-                    "No indexed anchors found for '{}'; at {}",
-                    target.label, target.commit_sha
+                    "Nothing in the index matched {} on this revision yet.",
+                    target.label
                 ),
                 anchor: None,
                 is_interpretation: true,
@@ -341,20 +363,18 @@ impl Auditor {
             });
         }
 
+        let short_rev = short_revision(&target.commit_sha);
         let what = AuditSection {
             title: "What".into(),
-            body: format!(
-                "Target {:?} «{}» at commit {}.",
-                target.kind, target.label, target.commit_sha
-            ),
+            body: format!("Looking at {} on revision {}.", target.label, short_rev),
             evidence: evidence.clone(),
         };
         let why = AuditSection {
             title: "Why".into(),
-            body: "This slice exists so a non-technical owner can audit agent-written code like a senior review: intent before mechanism.".into(),
+            body: "So you can check work the same way a careful reviewer would: what it is for, before how it is built.".into(),
             evidence: vec![EvidenceItem {
                 category: EvidenceCategory::Inferred,
-                claim: "Motivation is product guidance, not a runtime observation.".into(),
+                claim: "This reason comes from product guidance, not from a recorded run.".into(),
                 anchor: None,
                 is_interpretation: true,
                 unsupported: true,
@@ -362,7 +382,7 @@ impl Auditor {
         };
         let how = AuditSection {
             title: "How".into(),
-            body: "Follow static anchors from search/adapters; inferred claims stay labeled.".into(),
+            body: "Start from the files below. Claims marked as interpretation are guesses, not proof.".into(),
             evidence: evidence
                 .iter()
                 .filter(|e| e.category == EvidenceCategory::Static)
@@ -371,10 +391,10 @@ impl Auditor {
         };
         let alternatives = AuditSection {
             title: "Alternatives & standards".into(),
-            body: "Prefer commit-pinned evidence over embeddings-only answers; DeepTutor-style teach/assess comes later — this pass is audit explanation only.".into(),
+            body: "Prefer evidence pinned to a revision over answers that only sound right. Teaching and quizzes come later — this pass is explanation only.".into(),
             evidence: vec![EvidenceItem {
                 category: EvidenceCategory::Inferred,
-                claim: "Standards guidance is interpretive unless linked to a repo doc anchor.".into(),
+                claim: "Standards notes are interpretation unless they point at a file in the repo.".into(),
                 anchor: None,
                 is_interpretation: true,
                 unsupported: true,
@@ -454,7 +474,7 @@ mod tests {
     #[test]
     fn explain_uses_indexed_symbol_line_ranges() {
         use git2::Repository;
-        use viva_index::{index_commit, IndexOptions};
+        use viva_index::{IndexOptions, index_commit};
 
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
