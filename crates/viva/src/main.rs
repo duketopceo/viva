@@ -165,12 +165,13 @@ fn seed_repo_targets(auditor: &Auditor) -> anyhow::Result<()> {
     } else {
         &[("What is this repository for?", "")]
     };
+    let commit = resolve_repo_commit(&auditor.repo_root, "HEAD").unwrap_or_else(|_| "HEAD".into());
     for (label, hint) in seeds {
         let feature_id = if hint.is_empty() { None } else { Some(*hint) };
         let _ = auditor.register_target(
             TargetKind::Feature,
             label,
-            "HEAD",
+            &commit,
             Some("**/*"),
             None,
             feature_id,
@@ -1118,10 +1119,14 @@ mod map_tests {
         let mut perms = fs::metadata(&locked).unwrap().permissions();
         perms.set_mode(0o000);
         fs::set_permissions(&locked, perms.clone()).unwrap();
+        let restricted = fs::read_dir(&locked).is_err();
         let map = build_map(&root, 3);
         perms.set_mode(0o755);
         let _ = fs::set_permissions(&locked, perms);
         let _ = fs::remove_dir_all(&root);
+        if !restricted {
+            return;
+        }
         assert!(map.incomplete, "root should record the failed scan");
         assert!(
             map.children
@@ -1143,6 +1148,39 @@ mod map_tests {
                 .to_string_lossy()
                 .to_ascii_lowercase()
         );
+    }
+
+    #[test]
+    fn seeded_targets_pin_resolved_head() {
+        let root = std::env::temp_dir().join(format!("viva-seed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let repo = git2::Repository::init(&root).unwrap();
+        {
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "viva-test").unwrap();
+            cfg.set_str("user.email", "viva@test.local").unwrap();
+        }
+        fs::write(root.join("README.md"), "hello\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(oid).unwrap();
+        let sig = repo.signature().unwrap();
+        let sha = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string();
+        let store = Store::open_in_memory().unwrap();
+        let auditor = Auditor::new(store, root.clone());
+        seed_repo_targets(&auditor).unwrap();
+        let targets = auditor.list_targets().unwrap();
+        let _ = fs::remove_dir_all(&root);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].commit_sha, sha);
     }
 
     #[test]
