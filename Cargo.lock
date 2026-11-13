@@ -1345,6 +1345,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "git2",
  "serde",
  "serde_json",
  "tokio",
@@ -1388,12 +1389,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "git2",
- "hex",
- "sha2",
  "tempfile",
  "thiserror",
  "tree-sitter",
  "tree-sitter-typescript",
+ "viva-core",
  "viva-db",
 ]
 
