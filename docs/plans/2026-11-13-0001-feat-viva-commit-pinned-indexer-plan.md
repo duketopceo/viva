@@ -189,3 +189,14 @@ IDX-U1 docs → IDX-U2 schema → IDX-U3 indexer → IDX-U4 CLI/search/explain.
 - Explain uses indexed line ranges when available; degrade honesty unchanged.
 - ROADMAP / full-roadmap describe understanding-your-own-code; full-roadmap does not supersede origin.
 - No secrets in fixtures or logs.
+
+## Evidence (landed)
+
+| Unit | Status | Evidence |
+|---|---|---|
+| IDX-U1 | Done | ROADMAP + full-roadmap BRIEF-aligned in [#2](https://github.com/duketopceo/viva/pull/2) |
+| IDX-U2 | Done | `viva-db` index tables + commit mismatch rejection; `cargo test -p viva-db` |
+| IDX-U3 | Done | `viva-index` + fixture `tests/fixtures/ts-mini/`; `cargo test -p viva-index` (incl. `phase0_gate_*`) |
+| IDX-U4 | Done | `viva index` / `viva search` / explain symbol line ranges; `cargo test -p viva-core` |
+
+Merged: [#2](https://github.com/duketopceo/viva/pull/2). Gate ledger closed on main via follow-up ROADMAP evidence PR.

@@ -397,32 +397,34 @@ fn persist_parse(
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path as StdPath;
     use tempfile::tempdir;
 
-    fn init_repo_with_auth(dir: &Path) -> String {
+    fn fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ts-mini")
+    }
+
+    fn copy_dir(src: &StdPath, dst: &StdPath) {
+        fs::create_dir_all(dst).unwrap();
+        for entry in fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let to = dst.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &to);
+            } else {
+                fs::copy(entry.path(), to).unwrap();
+            }
+        }
+    }
+
+    fn init_repo_from_fixture(dir: &Path) -> String {
+        copy_dir(&fixture_root(), dir);
         let repo = Repository::init(dir).unwrap();
         {
             let mut cfg = repo.config().unwrap();
             cfg.set_str("user.name", "viva-test").unwrap();
             cfg.set_str("user.email", "viva@test.local").unwrap();
         }
-        fs::create_dir_all(dir.join("src")).unwrap();
-        fs::write(
-            dir.join("src/auth.ts"),
-            r#"
-export function validate(x: string): boolean {
-  return x.length > 0;
-}
-
-export function signIn(user: string): boolean {
-  return validate(user);
-}
-"#,
-        )
-        .unwrap();
-        fs::write(dir.join(".gitignore"), "skip-me.ts\n").unwrap();
-        fs::write(dir.join("skip-me.ts"), "export function hidden() {}\n").unwrap();
-
         let mut index = repo.index().unwrap();
         index
             .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
@@ -431,10 +433,13 @@ export function signIn(user: string): boolean {
         let oid = index.write_tree().unwrap();
         let tree = repo.find_tree(oid).unwrap();
         let sig = repo.signature().unwrap();
-        let commit = repo
-            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-        commit.to_string()
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap()
+            .to_string()
+    }
+
+    fn init_repo_with_auth(dir: &Path) -> String {
+        init_repo_from_fixture(dir)
     }
 
     #[test]
@@ -539,5 +544,76 @@ export function signOut(): void {}
             summary.working_tree_fingerprint.as_deref(),
             Some(from_core.as_str())
         );
+    }
+
+    #[test]
+    fn phase0_gate_every_symbol_resolves_to_file_line_commit() {
+        let dir = tempdir().unwrap();
+        let sha = init_repo_from_fixture(dir.path());
+        let store = Store::open_in_memory().unwrap();
+        index_commit(
+            &store,
+            &IndexOptions {
+                repo_root: dir.path().to_path_buf(),
+                commit_sha: sha.clone(),
+                fingerprint_dirty: false,
+            },
+        )
+        .unwrap();
+        let all = store.list_symbols_at_commit(&sha).unwrap();
+        assert!(
+            !all.is_empty(),
+            "fixture must yield at least one indexed symbol"
+        );
+        for sym in &all {
+            assert_eq!(sym.commit_sha, sha);
+            assert!(!sym.file_path.is_empty());
+            assert!(sym.start_line >= 1);
+            assert!(sym.end_line >= sym.start_line);
+            assert!(sym.end_byte >= sym.start_byte);
+        }
+    }
+
+    #[test]
+    fn non_typescript_files_skipped_without_error() {
+        let dir = tempdir().unwrap();
+        let sha = init_repo_from_fixture(dir.path());
+        fs::write(dir.path().join("notes.md"), "# not code\n").unwrap();
+        fs::write(dir.path().join("plain.js"), "function ignored() {}\n").unwrap();
+        let repo = Repository::open(dir.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(oid).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let sig = repo.signature().unwrap();
+        let sha2 = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "add non-ts",
+                &tree,
+                &[&parent],
+            )
+            .unwrap()
+            .to_string();
+        let store = Store::open_in_memory().unwrap();
+        let summary = index_commit(
+            &store,
+            &IndexOptions {
+                repo_root: dir.path().to_path_buf(),
+                commit_sha: sha2.clone(),
+                fingerprint_dirty: false,
+            },
+        )
+        .unwrap();
+        assert!(summary.symbols >= 2);
+        assert!(store.find_symbols(&sha2, "ignored").unwrap().is_empty());
+        assert_eq!(store.find_symbols(&sha, "signIn").unwrap().len(), 0);
+        assert_eq!(store.find_symbols(&sha2, "signIn").unwrap().len(), 1);
     }
 }

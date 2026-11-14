@@ -23,16 +23,20 @@
 git clone https://github.com/duketopceo/viva
 cd viva
 
-# toolchain: Rust 1.99.1
+# toolchain: see rust-toolchain.toml
 rustup show
 
-# env vars
-cp .env.example .env
-# fill in .env (OPENROUTER_API_KEY at minimum)
-
-# run — no crates yet; first runnable slice lands with plan unit U1
-cargo build --workspace
+# build + Phase 0 indexer gate
+cargo test --workspace
+cargo run -p viva -- --help
+# index a TypeScript git repo, then exact symbol search:
+# cargo run -p viva -- --db viva.db index --repo /path/to/ts-repo --commit HEAD
+# cargo run -p viva -- --db viva.db search signIn --repo /path/to/ts-repo --commit HEAD
+# HTML audit dashboard (default):
+# cargo run -p viva -- serve --repo /path/to/ts-repo --port 8787
 ```
+
+Tutor / OpenRouter env vars are not required for the indexer gate (Phase 0).
 
 ## Deploy
 
