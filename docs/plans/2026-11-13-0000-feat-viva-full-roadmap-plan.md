@@ -17,14 +17,15 @@ origin_plan: docs/plans/2026-11-12-0000-feat-viva-v1-plan.md
 - **Authority:** `docs/BRIEF.md` → `docs/plans/2026-11-12-0000-feat-viva-v1-plan.md` → this roadmap → active slice plans under `docs/plans/`.
 - **Stop conditions:** origin release gate on three journeys (request path, failure path, defend-and-change).
 
-## Progress baseline (2026-11-13)
+## Progress baseline (2026-11-14)
 
 | Area | Status |
 |---|---|
-| Workspace crates `viva-db` / `viva-core` / CLI | Done (scaffold) |
-| HTML audit dashboard + pin/explain + CBM/graphify degrade | Done (Phase 0 wedge ahead of Rune) |
-| Commit-pinned tree-sitter indexer | In progress — see `docs/plans/2026-11-13-0001-feat-viva-commit-pinned-indexer-plan.md` |
-| Evidence/assessment schema, understanding graph, tutor, journeys | Not started |
+| Workspace crates `viva-db` / `viva-core` / CLI | Done |
+| HTML audit dashboard + pin/explain + CBM/graphify degrade | Done (Phase 0 wedge ahead of Rune) — [#2](https://github.com/duketopceo/viva/pull/2), [#3](https://github.com/duketopceo/viva/pull/3) |
+| Commit-pinned tree-sitter indexer + path/symbol search | **Done** — [#2](https://github.com/duketopceo/viva/pull/2); slice `docs/plans/2026-11-13-0001-feat-viva-commit-pinned-indexer-plan.md` (IDX-U1–U4) |
+| Evidence/assessment schema | Next — `docs/plans/2026-11-14-0000-feat-viva-evidence-schema-plan.md` |
+| Understanding graph, tutor, journeys | Not started |
 
 ## Product Contract
 
@@ -33,10 +34,10 @@ Unchanged from origin plan and BRIEF. VIVA understands a particular revision of 
 ## Sequencing (mirrors origin U1–U11)
 
 ```text
-U1   Workspace + service skeleton (+ HTML wedge landed)
-U2   Commit-pinned indexer (tree-sitter)          ← active slice
-U3   Evidence + assessment schema
-U4   Exact search + symbol/reference queries
+U1   Workspace + service skeleton (+ HTML wedge landed)   Done
+U2   Commit-pinned indexer (tree-sitter)                  Done (IDX-U1–U4)
+U3   Evidence + assessment schema                         ← active next
+U4   Exact search + symbol/reference queries              Partial (path/symbol done; FTS deferred)
 U5   Understanding graph builder
 U6   Repository map + source viewer (Rune)
 U7   Evidence drawer + staleness

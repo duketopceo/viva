@@ -304,7 +304,17 @@ impl Store {
              FROM symbols WHERE commit_sha = ?1 AND name = ?2",
         )?;
         let rows = stmt.query_map(params![commit_sha, name], map_symbol)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// All symbols recorded for a commit — Phase 0 gate: every row resolves to file:line@commit.
+    pub fn list_symbols_at_commit(&self, commit_sha: &str) -> Result<Vec<SymbolRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, run_id, commit_sha, file_path, name, kind, start_byte, end_byte, start_line, end_line
+             FROM symbols WHERE commit_sha = ?1 ORDER BY file_path, start_line, name",
+        )?;
+        let rows = stmt.query_map(params![commit_sha], map_symbol)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn find_symbols_by_path_prefix(
@@ -318,7 +328,7 @@ impl Store {
              FROM symbols WHERE commit_sha = ?1 AND file_path LIKE ?2",
         )?;
         let rows = stmt.query_map(params![commit_sha, like], map_symbol)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn list_edges_from(&self, from_symbol_id: &str) -> Result<Vec<SymbolEdge>> {
@@ -326,7 +336,7 @@ impl Store {
             "SELECT id, run_id, commit_sha, from_symbol_id, to_name, kind FROM symbol_edges WHERE from_symbol_id = ?1",
         )?;
         let rows = stmt.query_map(params![from_symbol_id], map_edge)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 
@@ -487,6 +497,39 @@ mod tests {
         let edges = store.list_edges_from(&sym.id).unwrap();
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].to_name, "validate");
+    }
+
+    #[test]
+    fn list_symbols_at_commit_returns_all_for_sha() {
+        let store = Store::open_in_memory().unwrap();
+        let run = IndexRun {
+            id: new_id(),
+            repo_root: "/tmp/r".into(),
+            commit_sha: "ddd".into(),
+            working_tree_fingerprint: None,
+            created_at: Utc::now(),
+        };
+        store.insert_index_run(&run).unwrap();
+        for name in ["a", "b"] {
+            store
+                .insert_symbol(&SymbolRow {
+                    id: new_id(),
+                    run_id: run.id.clone(),
+                    commit_sha: "ddd".into(),
+                    file_path: "src/x.ts".into(),
+                    name: name.into(),
+                    kind: "function".into(),
+                    start_byte: 0,
+                    end_byte: 1,
+                    start_line: 1,
+                    end_line: 1,
+                })
+                .unwrap();
+        }
+        let all = store.list_symbols_at_commit("ddd").unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().all(|s| s.commit_sha == "ddd" && s.start_line >= 1));
+        assert!(store.list_symbols_at_commit("missing").unwrap().is_empty());
     }
 
     #[test]
