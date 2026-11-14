@@ -565,12 +565,42 @@ export function signOut(): void {}
             !all.is_empty(),
             "fixture must yield at least one indexed symbol"
         );
+        let repo = Repository::open(dir.path()).unwrap();
+        let commit = repo
+            .find_commit(Oid::from_str(&sha).unwrap())
+            .unwrap();
+        let tree = commit.tree().unwrap();
         for sym in &all {
             assert_eq!(sym.commit_sha, sha);
             assert!(!sym.file_path.is_empty());
             assert!(sym.start_line >= 1);
             assert!(sym.end_line >= sym.start_line);
             assert!(sym.end_byte >= sym.start_byte);
+            let entry = tree.get_path(Path::new(&sym.file_path)).unwrap();
+            let blob = entry.to_object(&repo).unwrap().peel_to_blob().unwrap();
+            let text = std::str::from_utf8(blob.content()).unwrap();
+            let line_count = text.lines().count() as u32;
+            assert!(
+                sym.end_line <= line_count.max(1),
+                "{} end_line {} beyond blob lines {}",
+                sym.name,
+                sym.end_line,
+                line_count
+            );
+            assert!(
+                (sym.end_byte as usize) <= text.len(),
+                "{} end_byte {} beyond blob len {}",
+                sym.name,
+                sym.end_byte,
+                text.len()
+            );
+            let slice = &text[sym.start_byte as usize..sym.end_byte as usize];
+            assert!(
+                slice.contains(&sym.name),
+                "symbol {} not found in commit blob range for {}",
+                sym.name,
+                sym.file_path
+            );
         }
     }
 

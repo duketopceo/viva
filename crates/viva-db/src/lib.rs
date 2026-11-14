@@ -304,7 +304,7 @@ impl Store {
              FROM symbols WHERE commit_sha = ?1 AND name = ?2",
         )?;
         let rows = stmt.query_map(params![commit_sha, name], map_symbol)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// All symbols recorded for a commit — Phase 0 gate: every row resolves to file:line@commit.
@@ -314,7 +314,7 @@ impl Store {
              FROM symbols WHERE commit_sha = ?1 ORDER BY file_path, start_line, name",
         )?;
         let rows = stmt.query_map(params![commit_sha], map_symbol)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn find_symbols_by_path_prefix(
@@ -328,7 +328,7 @@ impl Store {
              FROM symbols WHERE commit_sha = ?1 AND file_path LIKE ?2",
         )?;
         let rows = stmt.query_map(params![commit_sha, like], map_symbol)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn list_edges_from(&self, from_symbol_id: &str) -> Result<Vec<SymbolEdge>> {
@@ -336,7 +336,7 @@ impl Store {
             "SELECT id, run_id, commit_sha, from_symbol_id, to_name, kind FROM symbol_edges WHERE from_symbol_id = ?1",
         )?;
         let rows = stmt.query_map(params![from_symbol_id], map_edge)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 }
 
